@@ -1,0 +1,369 @@
+Реализация каналов рассылки OTP и структуры приложения
+Этот документ описывает реализацию каналов рассылки OTP, структуры приложения, механизма просрочки кодов и логирования, а также выбор системы сборки.
+
+1. Каналы рассылки OTP:
+
+Общие требования:
+
+Все каналы должны быть реализованы асинхронно, чтобы не блокировать основной поток обработки запросов. Используйте потоки (Threads), ExecutorService или другие механизмы асинхронности.
+Каждый канал должен иметь свой собственный класс/компонент, реализующий интерфейс OtpSender:
+public interface OtpSender {
+    boolean sendOtp(String recipient, String otpCode) throws OtpSendingException;
+}
+
+public class OtpSendingException extends Exception {
+    public OtpSendingException(String message, Throwable cause) {
+        super(message, cause);
+    }
+}
+SMS (Эмулятор):
+public class SmsOtpSender implements OtpSender {
+
+    private final String smsEmulatorUrl;
+
+    public SmsOtpSender(String smsEmulatorUrl) {
+        this.smsEmulatorUrl = smsEmulatorUrl;
+    }
+
+    @Override
+    public boolean sendOtp(String recipient, String otpCode) throws OtpSendingException {
+        try {
+            // Create URL
+            URL url = new URL(smsEmulatorUrl);
+            // Open Connection
+            HttpURLConnection con = (HttpURLConnection) url.openConnection();
+            // Setting basic header info
+            con.setRequestMethod("POST");
+            con.setRequestProperty("Content-Type", "application/json");
+            con.setDoOutput(true);
+            // Creating JSON String
+            String jsonInputString = String.format("{\"recipient\": \"%s\", \"message\": \"Your OTP code is: %s\"}", recipient, otpCode);
+            // Send request
+            try(OutputStream os = con.getOutputStream()) {
+                byte[] input = jsonInputString.getBytes(StandardCharsets.UTF_8);
+                os.write(input, 0, input {
+                    response.append(responseLine.trim());
+                }
+                System.out.println(response);
+                return true;
+
+            }
+
+        } catch (IOException e) {
+            throw new OtpSendingException("Failed to send SMS via emulator", e);
+        }
+    }
+}
+Настроить эмулятор на прослушивание определенного порта.
+В SmsOtpSender отправлять HTTP-запрос на URL эмулятора с данными (номер телефона, OTP-код).
+Email:
+
+Использовать JavaMail API или Spring Email для отправки электронных писем.
+Настроить SMTP-сервер.
+public class EmailOtpSender implements OtpSender {
+
+    private final String smtpHost;
+    private final int smtpPort;
+    private final String smtpUsername;
+    private final String smtpPassword;
+    private final String fromEmail;
+
+
+    public EmailOtpSender(String smtpHost, int smtpPort, String smtpUsername, String smtpPassword,String fromEmail) {
+        this.smtpHost = smtpHost;
+        this.smtpPort = smtpPort;
+        this.smtpUsername = smtpUsername;
+        this.smtpPassword = smtpPassword;
+        this.fromEmail = fromEmail;
+
+    }
+
+    @Override
+    public boolean sendOtp(String recipient, String otpCode) throws OtpSendingException {
+        try {
+            Properties props = new Properties();
+            props.put("mail.smtp.host", smtpHost);
+            props.put("mail.smtp.port", smtpPort);
+            props.put("mail.smtp.auth", "true");
+            props);
+
+            Message message = new MimeMessage(session);
+            message.setFrom(new InternetAddress(fromEmail));
+            message.setRecipients(Message.RecipientType.TO, InternetAddress.parse(recipient));
+            message.setSubject("Your OTP Code");
+            message.setText("Your OTP code is: " + otpCode);
+
+            Transport.send(message);
+            return true;
+
+        } catch (MessagingException e) {
+            throw new OtpSendingException("Failed to send email", e);
+        }
+    }
+}
+Telegram:
+import org.telegram.telegrambots.bots.TelegramLongPollingBot;
+import org.telegram.telegrambots.meta.TelegramBotsApi;
+import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
+import org.telegram.telegrambots.meta.api.objects.Update;
+import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
+import org.telegram.telegrambots.updatesreceivers.DefaultBotSession;
+
+public class TelegramOtpSender extends TelegramLongPollingBot implements OtpSender {
+
+    private final String botToken;
+
+    public TelegramOtpSender(String botToken) {
+        this.botToken = botToken;
+        try {
+            TelegramBotsApi botsApi = new TelegramBotsApi(DefaultBotSession.class);
+            botsApi.registerBot(this);
+        } catch (TelegramApiException e) {
+            e.printStackTrace();
+        }
+    }
+
+    @Override
+    public String getBotUsername() {
+        return "YourBotName";
+    }
+
+    @Override
+    public String getBotToken() {
+        return botToken;
+    }
+
+    @Override
+    public void onUpdateReceived(Update update) {
+      
+    }
+
+    @Override
+    public boolean sendOtp(String recipient, String otpCode) throws OtpSendingException {
+        try {
+            SendMessage message = new SendMessage();
+            message.setChatId(recipient); // recipient должен быть chat ID
+            message.setText("Your OTP code is: " + otpCode);
+            execute(message);
+            return true;
+        } catch (TelegramApiException e) {
+            throw new OtpSendingException("Failed to send message via Telegram", e);
+        }
+    }
+}
+Сохранение в файл:
+public class FileOtpSender implements OtpSender {
+
+    private final String filePath;
+
+    public FileOtpSender(String filePath) {
+        this.filePath = filePath;
+    }
+
+    @Override
+    public boolean sendOtp(String recipient, String otpCode) throws OtpSendingException {
+        try (PrintWriter out = new PrintWriter(new FileWriter(filePath, true))) {
+            out.println("OTP code for " + recipient + ": " + otpCode);
+            return true;
+        } catch (IOException e) {
+            throw new OtpSendingException("Failed to save OTP to file", e);
+        }
+    }
+}
+2. Структура приложения:
+otp-application/
+├── src/
+│   ├── main/
+│   │   ├── java/
+│   │   │   ├── com/
+│   │   │   │   └── example/
+│   │   │   │       ├── api/             # Слой API (com.sun.net.httpserver или Spring MVC)
+│   │   │   │       │   ├── handlers/   # Обработчики HTTP-запросов
+│   │   │   │       │   │   ├── UserRegistrationHandler.java
+│   │   │   │       │   │   ├── UserLoginHandler.java
+│   │   │   │       │   │   ├── ...
+│   │   │   │       │   ├── filters/    # Фильтры (например, для аутентификации)
+│   │   │   │       │   │   ├── AuthenticationFilter.java
+│   │   │   │       │   │   ├── ...
+│   │   │   │       ├── service/         # Слой сервисов (бизнес-логика)
+│   │   │   │       │   ├── UserService.java
+│   │   │   │       │   ├── OtpService.java
+│   │   │   │       │   ├── ...
+│   │   │   │       ├── dao/             # Слой DAO (Data Access Object)
+│   │   │   │       │   ├── UserDao.java
+│   │   │   │       │   ├── OtpDao.java
+│   │   │   │       │   ├── ...
+│   │   │   │       ├── model/           # Модели данных (POJO)
+│   │   │   │       │   ├── User.java
+│   │   │   │       │   ├── OtpCode.java
+│   │   │   │       │   ├── ...
+│   │   │   │       ├── util/            # Вспомогательные классы
+│   │   │   │       │   ├── OtpSender.java
+│   │   │   │       │   ├── SmsOtpSender.java
+│   │   │   │       │   ├── EmailOtpSender.java
+│   │   │   │       │   ├── TelegramOtpSender.java
+│   │   │   │       │   ├── FileOtpSender.java
+│   │   │   │       │   ├── ...
+│   │   │   │       ├── config/          # Конфигурация приложения
+│   │   │   │       │   ├── DatabaseConfig.java
+│   │   │   │       │   ├── ...
+│   │   │   │       ├── Main.java        # Главный класс приложения
+│   │   │   │       └── ...
+│   ├── resources/
+│   │   ├── log4j2.xml   #Конфигурационный файл для логирования
+│   └── ...
+├── build.gradle       # Файл сборки Gradle
+└── ...
+Слой API (com.sun.net.httpserver):
+
+Реализуется с помощью HttpHandler для каждого эндпоинта.
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpHandler;
+import java.io.IOException;
+import java.io.OutputStream;
+
+public class UserRegistrationHandler implements HttpHandler {
+
+    @Override
+    public void handle(HttpExchange exchange) throws IOException {
+        // Получение данных из запроса
+        // Валидация данных
+        // Вызов сервиса для регистрации пользователя
+        // Формирование ответа
+        String response = "User registered successfully";
+        exchange.sendResponseHeaders(200, response.getBytes().length);
+        OutputStream os = exchange.getResponseBody();
+        os.write(response.getBytes());
+        os.close();
+    }
+}
+Слой сервисов:
+
+Содержит бизнес-логику: валидация данных, генерация OTP-кодов, отправка OTP-кодов, взаимодействие с DAO.
+public class OtpService {
+
+    private final OtpDao otpDao;
+    private final OtpSender otpSender;
+    private final int codeLength;
+
+    public OtpService(OtpDao otpDao, OtpSender otpSender, int codeLength) {
+        this.otpDao = otpDao;
+        this.otpSender = otpSender;
+        this.codeLength = codeLength;
+    }
+
+    public UUID generateAndSendOtp(int userId, String operationId, String recipient) throws OtpSendingException, SQLException {
+        String otpCode = generateOtpCode(codeLength);
+        UUID otpId = otpDao.createOtpCode(userId, otpCode, operationId);
+        boolean sent = otpSender.sendOtp(recipient, otpCode);
+        if (!sent) {
+            throw new OtpSendingException("Failed to send OTP code", null);
+        }
+        return otpId;
+    }
+
+    private String generateOtpCode(int length) {
+        // Генерация OTP-кода (используйте SecureRandom)
+        return "123456"; // Замените на реальную реализацию
+    }
+}
+Слой DAO:
+
+Содержит классы для взаимодействия с базой данных (CRUD-операции).
+Использует JDBC для выполнения SQL-запросов.\
+public class OtpDao {
+
+    public UUID createOtpCode(int userId, String code, String operationId) throws SQLException {
+        // Создание нового OTP-кода в базе данных (используйте PreparedStatement)
+        return UUID.randomUUID(); // Замените на реальную реализацию
+    }
+}
+Механизм просрочки OTP-кодов:
+
+Создать планировщик задач (например, ScheduledExecutorService) для периодического выполнения задачи по обновлению статуса OTP-кодов.
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+
+public class OtpExpirationScheduler {
+
+    private final OtpDao otpDao;
+
+    public OtpExpirationScheduler(OtpDao otpDao) {
+        this.otpDao = otpDao;
+    }
+
+    public void start() {
+        ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
+        scheduler.scheduleAtFixedRate(this::expireOtpCodes, 0, 1, TimeUnit.HOURS); // Запускать каждый час
+    }
+
+    private void expireOtpCodes() {
+        try {
+            otpDao.expireOtpCodes();
+        } catch (Exception e) {
+            // Логирование ошибки
+        }
+    }
+}
+В OtpDao реализовать метод expireOtpCodes, который обновляет статус кодов, у которых истек срок действия:
+public void expireOtpCodes() throws SQLException {
+        String sql = "UPDATE otp_codes SET status = 'EXPIRED' WHERE status = 'ACTIVE' AND expires_at < (NOW() AT TIME ZONE 'utc')";
+        try (Connection conn = getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.executeUpdate();
+        }
+    }
+     Логирование:
+
+Использовать библиотеку для логирования (например, Log4j 2, SLF4J + Logback).
+Настроить логирование в файл, консоль или другие источники.
+<?xml version="1.0" encoding="UTF-8"?>
+<Configuration status="WARN">
+    <Appenders>
+        <Console name="Console" target="SYSTEM_OUT">
+            <PatternLayout pattern="%d{HH:mm:ss.SSS} [%t] %-5level %logger{36} - %msg%n"/>
+        </Console>
+        <File name="File" fileName="application.log" append="true">
+            <PatternLayout pattern="%d{yyyy-MM-dd HH:mm:ss.SSS} [%t] %-5level %logger{36
+            Использовать Logger в коде:
+java
+
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
+public class UserService {
+
+    private static final Logger logger = LogManager.getLogger(UserService.class);
+
+    public void registerUser(String login, String password) {
+        try {
+            // Регистрация пользователя
+            logger.info("User registered: " + login);
+        } catch (Exception e) {
+            logger.error("Failed to register user: " + login, e);
+        }
+    }
+}
+5. Система сборки:
+
+Gradle: Рекомендуется использовать Gradle.
+Пример build.gradle:
+gradle
+
+plugins {
+    id 'java'
+}
+
+group 'com.example'
+version '1.0-SNAPSHOT'
+
+sourceCompatibility = 17
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'org.postgresql:postgresql:42.6.0'
+    implementation 'com.sun.net.httpserver:http
