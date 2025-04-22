@@ -1,0 +1,207 @@
+Проект базы данных для системы OTP с PostgreSQL 17 и JDBC
+Этот документ описывает структуру базы данных, реализованной с помощью PostgreSQL 17, для системы одноразовых паролей (OTP), а также взаимодействие с базой данных через JDBC.
+
+1. Схема базы данных
+-- Создание таблицы users
+CREATE TABLE users (
+    user_id SERIAL PRIMARY KEY,
+    login VARCHAR(255) UNIQUE NOT NULL,
+    password VARCHAR(255) NOT NULL, -- Хранить захешированный пароль!
+    role VARCHAR(50) NOT NULL DEFAULT 'user'  -- Пример: 'user', 'admin'
+);
+
+-- Создание таблицы otp_config
+CREATE TABLE otp_config (
+    config_id SERIAL PRIMARY KEY,
+    code_length INTEGER NOT NULL DEFAULT 6,  -- Длина OTP-кода
+    expiration_time_seconds INTEGER NOT NULL DEFAULT 300, -- Время жизни OTP-кода (в секундах)
+    max_attempts INTEGER NOT NULL DEFAULT 3  -- Максимальное количество попыток ввода
+    -- Добавьте другие настройки OTP, если необходимо
+);
+
+-- Убеждаемся, что в таблице otp_config всегда только одна запись
+ALTER TABLE otp_config ADD CONSTRAINT single_otp_config CHECK (config_id = (SELECT min(config_id) FROM otp_config));
+
+-- Создание таблицы otp_codes
+CREATE TABLE otp_codes (
+    otp_id UUID PRIMARY KEY DEFAULT gen_random_uuid(), --Использование UUID в качестве Primary Key
+    user_id INTEGER NOT NULL,
+    code VARCHAR(10) NOT NULL,  -- Длина должна соответствовать otp_config.code_length
+    status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE', -- ACTIVE, EXPIRED, USED
+    created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT (NOW() AT TIME ZONE 'utc'),  -- В UTC
+    expires_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+    operation_id VARCHAR(255),  -- ID операции, к которой привязан OTP (опционально)
+    FOREIGN KEY (user_id) REFERENCES users(user_id),
+    CONSTRAINT check_status CHECK (status IN ('ACTIVE', 'EXPIRED', 'USED'))
+);
+
+Описание таблиц:
+
+users:
+user_id (SERIAL PRIMARY KEY): Уникальный идентификатор пользователя.
+login (VARCHAR(255) UNIQUE NOT NULL): Логин пользователя (должен быть уникальным).
+password (VARCHAR(255) NOT NULL): Зашифрованный пароль пользователя (НЕ храните пароли в открытом виде!). Рекомендуется использовать bcrypt, Argon2 или scrypt.
+role (VARCHAR(50) NOT NULL DEFAULT ‘user’): Роль пользователя (например, ‘user’, ‘admin’). Указывает права доступа.
+otp_config:
+config_id (SERIAL PRIMARY KEY): Уникальный идентификатор конфигурации (всегда 1 запись).
+code_length (INTEGER NOT NULL DEFAULT 6): Длина генерируемого OTP-кода.
+expiration_time_seconds (INTEGER NOT NULL DEFAULT 300): Время жизни OTP-кода в секундах (по умолчанию 5 минут).
+max_attempts (INTEGER NOT NULL DEFAULT 3): Максимальное количество попыток ввода OTP-кода.
+single_otp_config (CONSTRAINT): Гарантирует, что в таблице будет только одна запись. Это достигается ограничением, что config_id всегда равен минимальному config_id в таблице.
+otp_codes:
+otp_id (UUID PRIMARY KEY DEFAULT gen_random_uuid()): Уникальный идентификатор OTP-кода (используется UUID для большей уникальности и безопасности).
+user_id (INTEGER NOT NULL): Идентификатор пользователя, которому принадлежит OTP-код (внешний ключ к таблице users).
+code (VARCHAR(10) NOT NULL): Сгенерированный OTP-код (длина должна соответствовать otp_config.code_length).
+status (VARCHAR(20) NOT NULL DEFAULT ‘ACTIVE’): Статус OTP-кода (‘ACTIVE’, ‘EXPIRED’, ‘USED’).
+created_at (TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT (NOW() AT TIME ZONE ‘utc’)) : Время создания OTP-кода (в UTC).
+expires_at (TIMESTAMP WITHOUT TIME ZONE NOT NULL): Время истечения срока действия OTP-кода. Рассчитывается на основе created_at и otp_config.expiration_time_seconds.
+operation_id (VARCHAR(255)): Идентификатор операции, к которой привязан OTP-код (например, ID транзакции, ID сброса пароля). Может быть NULL, если OTP не привязан к конкретной операции.
+FOREIGN KEY (user_id) REFERENCES users(user_id): Определяет связь с таблицей users.
+CONSTRAINT check_status CHECK (status IN ('ACTIVE', 'EXPIRED', 'USED')): Ограничение для допустимых статусов.
+2. Взаимодействие с базой данных через JDBC
+
+ Код на Java для взаимодействия с базой данных:
+ import java.sql.*;
+import java.util.UUID;
+
+public class OtpDatabase {
+
+    private static final String DB_URL = "jdbc:postgresql://localhost:5432/your_database";
+    private static final String DB_USER = "your_user";
+    private static final String DB_PASSWORD = "your_password";
+
+    public static Connection getConnection() throws SQLException {
+        return DriverManager.getConnection(DB_URL, DB_USER, DB_PASSWORD);
+    }
+
+    //  Создание нового OTP-кода
+    public UUID createOtpCode(int userId, String code, String operationId) throws SQLException {
+        String sql = "INSERT INTO otp_codes (user_id, code, expires_at, operation_id) VALUES (?, ?, ?, ?) RETURNING otp_id";
+        try (Connection conn = getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+
+            // Get Expiration Time from config
+            String configSQL = "SELECT expiration_time_seconds FROM otp_config LIMIT 1";
+            int expirationTimeSeconds = 300; // Default Value
+            try(PreparedStatement configStmt = conn.prepareStatement(configSQL);
+                ResultSet rs = configStmt.executeQuery()){
+                if(rs.next()){
+                    expirationTimeSeconds = rs.getInt("expiration_time_seconds");
+                }
+            }
+
+            Timestamp expiryTime = new Timestamp(System.currentTimeMillis() + (expirationTimeSeconds * 1000L));
+
+
+            pstmt.setInt(1, userId);
+            pstmt.setString(2, code);
+            pstmt.setTimestamp(3, expiryTime, Calendar.getInstance(TimeZone.getTimeZone("UTC")));
+            pstmt.setString(4, operationId);
+
+            try (ResultSet rs = pstmt.executeQuery()) {
+                if (rs.next()) {
+                    return UUID.fromString(rs.getString("otp_id"));
+                } else {
+                    return null;
+                }
+            }
+        }
+    }
+
+    // Валидация OTP-кода и изменение статуса
+    public boolean validateOtpCode(UUID otpId, String code) throws SQLException {
+        String sql = "UPDATE otp_codes SET status = 'USED' WHERE otp_id = ? AND code = ? AND status = 'ACTIVE' AND expires_at > (NOW() AT TIME ZONE 'utc')";
+        try (Connection conn = getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setObject(1, otpId);
+            pstmt.setString(2, code);
+
+            int affectedRows = pstmt.executeUpdate();
+            return affectedRows > 0;
+        }
+    }
+
+    //  Получение данных пользователя по логину
+    public User getUserByLogin(String login) throws SQLException {
+        String sql = "SELECT user_id, login, password, role FROM users WHERE login = ?";
+        try (Connection conn = getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setString(1, login);
+            try (ResultSet rs = pstmt.executeQuery()) {
+                if (rs.next()) {
+                    User user = new User();
+                    user.setUserId(rs.getInt("user_id"));
+                    user.setLogin(rs.getString("login"));
+                    user.setPassword(rs.getString("password"));
+                    user.setRole(rs.getString("role"));
+                    return user;
+                } else {
+                    return null;
+                }
+            }
+        }
+    }
+
+
+    // Другие методы: получения OTP-кода по ID, смены статуса OTP-кода, и т.д.
+}
+Важные моменты в коде JDBC:
+
+getConnection(): Метод для получения соединения с базой данных. Используйте пул соединений (например, HikariCP) для повышения производительности.
+PreparedStatement: Используйте PreparedStatement для защиты от SQL-инъекций.
+Обработка исключений: Всегда обрабатывайте исключения SQLException.
+Использование try-with-resources: Автоматически закрывает ресурсы, такие как Connection, PreparedStatement и ResultSet, после их использования.
+Запросы параметризованы: Значения вставляются в запрос через pstmt.setString() и pstmt.setInt(), а не конкатенацией строк.
+Получение данных из otp_config: Код динамически получает время жизни OTP из таблицы otp_config.
+Обработка времени в UTC: Временные метки сохраняются и сравниваются в UTC, чтобы избежать проблем с часовыми поясами.
+Использование UUID: Использование UUID в качестве Primary Key для таблицы otp_codes.
+3. Дополнительные соображения:
+
+Хеширование паролей: Обязательно используйте надежный алгоритм хеширования (bcrypt, Argon2, scrypt) для хранения паролей в таблице users. Не храните пароли в открытом виде!
+Генерация OTP-кодов: Используйте криптографически безопасный генератор случайных чисел для генерации OTP-кодов. Убедитесь, что длина OTP-кода соответствует значению в otp_config.
+Очистка устаревших OTP-кодов: Реализуйте механизм для периодической очистки таблицы otp_codes от устаревших (EXPIRED) OTP-кодов. Это можно сделать с помощью запланированной задачи (cron job).
+Безопасность: Обратите особое внимание на безопасность при работе с OTP-кодами. Защитите каналы связи, используйте HTTPS, и принимайте меры для предотвращения атак воспроизведения и брутфорса.
+Конфигурация: Предоставьте администратору возможность изменять параметры OTP (длина, время жизни, количество попыток) через интерфейс администрирования. Это позволит адаптировать систему к различным требованиям.
+Транзакции: Используйте транзакции для обеспечения атомарности операций, особенно при обновлении статуса OTP-кода и выполнении связанных действий.
+Логирование: Ведите логи операций с OTP-кодами для отладки и аудита безопасности.
+Создания пользователя:
+public void createUser(String login, String password, String role) throws SQLException {
+    String sql = "INSERT INTO users (login, password, role) VALUES (?, ?, ?)";
+    try (Connection conn = getConnection();
+         PreparedStatement pstmt = conn.prepareStatement(sql)) {
+        // Хешируем пароль (bcrypt, Argon2 или scrypt) - ЗАМЕНИТЕ ЭТИМ КОДОМ!
+        String hashedPassword = BCrypt.hashpw(password, BCrypt.gensalt());
+
+        pstmt.setString(1, login);
+        pstmt.setString(2, hashedPassword);
+        pstmt.setString(3, role);
+        pstmt.executeUpdate();
+    }
+}
+Проверка OTP кода и получения данных пользователя :
+public boolean verifyOTP(String login, String otp) throws SQLException {
+        User user = getUserByLogin(login);
+        if(user == null) {
+            System.out.println("User not found!");
+            return false;
+        }
+
+        try (Connection conn = getConnection();
+             PreparedStatement pstmt = conn.prepareStatement("SELECT otp_id FROM otp_codes WHERE user_id = ? AND code = ? AND status = 'ACTIVE' AND expires_at > (NOW() AT TIME ZONE 'utc')")) {
+
+            pstmt.setInt(1, user.getUserId());
+            pstmt.setString(2, otp);
+
+            try (ResultSet rs = pstmt.executeQuery()) {
+                if (rs.next()) {
+                   UUID otpId = (UUID) rs.getObject("otp_id");
+                    return validateOtpCode(otpId, otp);
+
+                } else {
+                    System.out.println("Wrong OTP !");
+                    return false;
+                }
+            }
+        }
+    }
+    
