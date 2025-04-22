@@ -1,0 +1,125 @@
+1. Предварительные требования:
+
+Java Development Kit (JDK) 17 или выше: Установите JDK и убедитесь, что переменная окружения JAVA_HOME указывает на каталог установки JDK.
+Gradle: Установите Gradle.
+PostgreSQL 17: Установите PostgreSQL и создайте базу данных для вашего приложения.
+Эмулятор SMS (опционально): Если вы планируете использовать отправку OTP по SMS, установите и настройте эмулятор SMS.
+Telegram Bot (опционально): Если вы планируете использовать отправку OTP через Telegram, создайте Telegram-бота и получите его токен.
+Редактор кода или IDE (например, IntelliJ IDEA, Eclipse): Установите редактор кода или IDE для работы с Java-кодом.
+2. Настройка окружения:
+
+Настройка PostgreSQL:
+
+Создайте базу данных:
+bash
+
+createdb your_database
+Подключитесь к базе данных (например, с помощью psql):
+bash
+
+psql -d your_database -U your_user
+Выполните скрипты для создания таблиц (из раздела “1. Схема базы данных”):
+sql
+
+-- Создание таблицы users
+CREATE TABLE users (
+    user_id SERIAL PRIMARY KEY,
+    login VARCHAR(255) UNIQUE NOT NULL,
+    password VARCHAR(255) NOT NULL, -- Хранить захешированный пароль!
+    role VARCHAR(50) NOT NULL DEFAULT 'user'  -- Пример: 'user', 'admin'
+);
+
+-- Создание таблицы otp_config
+CREATE TABLE otp_config (
+    config_id SERIAL PRIMARY KEY,
+    code_length INTEGER NOT NULL DEFAULT 6,  -- Длина OTP-кода
+    expiration_time_seconds INTEGER NOT NULL DEFAULT 300, -- Время жизни OTP-кода (в секундах)
+    max_attempts INTEGER NOT NULL DEFAULT 3  -- Максимальное количество попыток ввода
+    -- Добавьте другие настройки OTP, если необходимо
+);
+
+-- Убеждаемся, что в таблице otp_config всегда только одна запись
+ALTER TABLE otp_config ADD CONSTRAINT single_otp_config CHECK (config_id = (SELECT min(config_id) FROM otp_config));
+
+-- Создание таблицы otp_codes
+CREATE TABLE otp_codes (
+    otp_id UUID PRIMARY KEY DEFAULT gen_random_uuid(), --Использование UUID в качестве Primary Key
+    user_id INTEGER NOT NULL,
+    code VARCHAR(10) NOT NULL,  -- Длина должна соответствовать otp_config.code_length
+    status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE', -- ACTIVE, EXPIRED, USED
+    created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT (NOW() AT TIME ZONE 'utc'),  -- В UTC
+    expires_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+    operation_id VARCHAR(255),  -- ID операции, к которой привязан OTP (опционально)
+    FOREIGN KEY (user_id) REFERENCES users(user_id),
+    CONSTRAINT check_status CHECK (status IN ('ACTIVE', 'EXPIRED', 'USED'))
+);
+Создайте первого администратора (замените admin_login и admin_password):
+sql
+
+INSERT INTO users (login, password, role) VALUES ('admin_login', 'hashed_admin_password', 'admin');
+Важно: Пароль должен быть захеширован с использованием bcrypt или другого безопасного алгоритма. Замените "hashed_admin_password" на реальный хэш пароля.
+Настройка эмулятора SMS (опционально):
+
+Скачайте и запустите эмулятор SMS (или напишите свой).
+Укажите URL эмулятора в коде (smsEmulatorUrl).
+Настройка Telegram Bot (опционально):
+
+Получите токен вашего Telegram-бота.
+Укажите токен в коде (telegramBotToken).
+Установите библиотеку org.telegram:telegrambots:6.9.0 в build.gradle
+Настройка Email (опционально):
+
+Укажите все необходимые параметры для отправки электронных писем (SMTP-сервер, порт, имя пользователя, пароль, email отправителя).
+Установите библиотеку com.sun.mail:javax.mail:1.6.2 в build.gradle
+Настройка файлового хранения:
+
+Укажите путь для сохранения otp кодов
+3. Сборка и запуск приложения:
+
+Получение кода: Скачайте код приложения или склонируйте репозиторий.
+
+Настройка параметров подключения к базе данных:
+
+Откройте файл OtpSystem.java (или файл с вашим главным классом).
+Замените значения DB_URL, DB_USER, DB_PASSWORD на ваши параметры подключения к базе данных.
+Настройка каналов рассылки (опционально):
+
+Замените URL эмулятора SMS, параметры SMTP, токен Telegram-бота на ваши значения (если вы планируете их использовать).
+Сборка приложения с помощью Gradle:
+
+Откройте терминал и перейдите в каталог с файлом build.gradle.
+Выполните команду:
+bash
+
+gradle build
+Эта команда создаст файл otp-application-1.0-SNAPSHOT.jar в каталоге build/libs.
+Запуск приложения:
+
+Выполните команду:
+bash
+
+java -jar build/libs/otp-application-1.0-SNAPSHOT.jar
+Приложение запустится и начнет прослушивать порт 8081 (если вы не изменили настройки).
+4. Тестирование API:
+
+Используйте инструменты, такие как curl, Postman или Insomnia, для тестирования API.
+
+Отправка запроса на генерацию OTP-кода:
+
+bash
+
+curl -X POST http://localhost:8081/api/otp/generate
+Проверьте, был ли отправлен OTP-код:
+
+Если вы используете эмулятор SMS, проверьте, что он получил запрос.
+Если вы используете Email, проверьте ваш почтовый ящик.
+Если вы используете Telegram, проверьте сообщения от вашего бота.
+Если вы используете сохранение в файл, проверьте файл otp/otp_codes.txt.
+Проверьте логи приложения: Проверьте файл application.log на наличие ошибок или информации о работе приложения.
+
+5. Возможные проблемы и решения:
+
+Ошибка подключения к базе данных: Проверьте, правильно ли указаны параметры подключения к базе данных (URL, имя пользователя, пароль). Убедитесь, что база данных запущена.
+Ошибка отправки SMS/Email/Telegram: Проверьте, правильно ли настроены параметры для каналов отправки. Убедитесь, что эмулятор SMS запущен, SMTP-сервер доступен, а токен Telegram-бота действителен.
+Ошибка при сборке с Gradle: Проверьте, правильно ли настроен Gradle и указаны все необходимые зависимости в файле build.gradle.
+Приложение не запускается: Проверьте, не занят ли порт 8081 другим приложением. Проверьте логи приложения на наличие ошибок.
